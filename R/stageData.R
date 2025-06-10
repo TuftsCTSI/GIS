@@ -39,8 +39,8 @@ getStaged <- function(rec, storageConfig = readStorageConfig()) {
   # ONLY HANDLES FILES (NO API YET)
   # TODO there has to be a different way to change timeout without changing options
   
-  isPersisted <- storageConfig$`offline-storage`$`persist-data`
-  storageDir <- file.path(storageConfig$`offline-storage`$directory, rec$dataset_name)
+  isPersisted <- storageConfig$offline_storage$persist_data
+  storageDir <- file.path(storageConfig$offline_storage$directory, rec$dataset_name)
   gisTempDir <- file.path(tempdir(), 'gaia')
   
   if (!dir.exists(gisTempDir)) {
@@ -93,8 +93,39 @@ getStaged <- function(rec, storageConfig = readStorageConfig()) {
       }
       return(readFromZip(zipfile = tempzip, exdir = gisTempDir, rec = rec))
 
+    } else if (rec$download_subtype == "tar" | rec$download_subtype == "tar.gz" ) { 
+      # copied from above, much optimization to do in all of this ...
+
+      if(isTRUE(storageDir)) { # If there is no config file or no storageDir set, this can be skipped
+      # If the storage directory exists, assume tar file must be there
+        if(dir.exists(storageDir)) {
+          message("Skipping download (tar file located on disk) ...")
+          return(readFromTar(tarfile = file.path(storageDir, rec$download_url),
+                      exdir = gisTempDir,
+                      rec = rec))
+        }
+        
+        # If the storage directory does not exist, but isPersisted is True, create storageDirectory and save tip there
+        if(isPersisted && !dir.exists(storageDir)) {
+          dir.create(storageDir)
+          tarfile <- file.path(storageDir, basename(rec$download_url))
+          # TODO use a try-catch: 
+          # If download fails, delete storageDir entirely
+          utils::download.file(url = rec$download_url, destfile = tarfile)
+          return(readFromTar(tarfile = tarfile, exdir = gisTempDir, rec = rec))
+        }
+      }
+    
+      temptar <- file.path(gisTempDir, basename(rec$download_url))
+      if (!file.exists(temptar)) {
+        utils::download.file(rec$download_url, temptar)
+      } else {
+        message("Skipping download (tarfile located on disk) ...")
+      }
+      return(readFromTar(tarfile = temptar, exdir = gisTempDir, rec = rec))
+
     }
-  }
+  } 
 }
 
 
@@ -104,7 +135,7 @@ getStaged <- function(rec, storageConfig = readStorageConfig()) {
 #' 
 
 readStorageConfig <- function() {
-  yaml::read_yaml(system.file('config.yml', package = 'gaiaCore'))
+  yaml::read_yaml(system.file('config/storage.yml', package = 'gaiaCore'))
 }
 
 
@@ -121,6 +152,28 @@ readStorageConfig <- function() {
 
 readFromZip <- function(zipfile, exdir, rec) {
   utils::unzip(zipfile, exdir=exdir)
+  if (rec$download_data_standard %in% list('shp','gdb')) {
+    return(sf::st_read(file.path(exdir, rec$download_filename)))
+  } else if (rec$download_data_standard == 'csv') {
+    return(utils::read.csv(file = file.path(exdir, rec$download_filename),
+                           check.names = FALSE))
+  } else {
+    message(paste0("no import handler for",rec$download_data_standard))
+  }
+}
+
+
+#' Unrar and read contents of a rar file into R memory
+#'
+#' @param rarfile (character) path to the compressed file
+#' @param exdir (character) path to where contents of the compressed file should be extracted
+#' @param rec (data.frame) A full record (entire row) from the backbone.data_source table corresponding to the data source of interest. Usually created using \code{getDataSourceRecord} function
+#'
+#' @return (data.frame) An untransformed version of the source data
+#'
+
+readFromTar <- function(tarfile, exdir, rec) {
+  utils::untar(tarfile, exdir=exdir)
   if (rec$download_data_standard %in% list('shp','gdb')) {
     return(sf::st_read(file.path(exdir, rec$download_filename)))
   } else if (rec$download_data_standard == 'csv') {
